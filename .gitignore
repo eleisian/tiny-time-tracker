@@ -1,0 +1,43 @@
+# Python build artifacts
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+.env
+.env.*
+
+# Test/coverage caches
+.pytest_cache/
+.coverage*
+htmlcov/
+coverage.xml
+
+# Type checker / linters
+.mypy_cache/
+.ruff_cache/
+.pyre/
+.pytype/
+
+# IDE/editor
+.vscode/
+.idea/
+*.swp
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Local runtime data
+# Optional project log that may be created in the repo folder
+# (default log lives at ~/.timelog.json)
+timelog.json

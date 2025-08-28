@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tt-time"
+version = "0.1.0"
+description = "Tiny terminal time tracker (tt)"
+readme = "README.md"
+authors = [{ name = "tt-time" }]
+license = { text = "MIT" }
+requires-python = ">=3.8"
+keywords = ["time-tracker", "cli", "productivity"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+]
+
+[project.scripts]
+# `tt` will be available in PATH
+# Usage: tt time start|stop|log|report
+"tt" = "tt_time.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["tt_time*"]

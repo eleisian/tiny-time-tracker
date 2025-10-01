@@ -65,23 +65,40 @@ def parse_duration(s: str) -> timedelta:
     total = 0
     num = ""
     had_unit = False
-    for ch in s:
+    i = 0
+    
+    while i < len(s):
+        ch = s[i]
         if ch.isdigit():
             num += ch
-        elif ch in ("h", "m"):
+        elif ch == "h":
             if not num:
-                raise ValueError("Missing number before unit")
-            if ch == "h":
-                total += int(num) * 60
-            else:
-                total += int(num)
+                raise ValueError("Missing number before 'h'")
+            total += int(num) * 60
             num = ""
             had_unit = True
+            # Check if next characters are "r" (for "hr")
+            if i + 1 < len(s) and s[i + 1] == "r":
+                i += 1  # Skip the "r"
+        elif ch == "m":
+            if not num:
+                raise ValueError("Missing number before 'm'")
+            total += int(num)
+            num = ""
+            had_unit = True
+            # Check if next characters are "in" (for "min")
+            if i + 2 < len(s) and s[i + 1:i + 3] == "in":
+                i += 2  # Skip "in"
         elif ch in (":",):
             # Support HH:MM format
             pass
+        elif ch in ("r", "i", "n"):
+            # Skip these as they're part of "hr" or "min"
+            pass
         else:
             raise ValueError(f"Unsupported character in duration: {ch}")
+        i += 1
+    
     if num and not had_unit:
         # plain minutes (e.g., "90")
         total += int(num)
@@ -190,31 +207,37 @@ def _render_analog_clock_loop(start_dt: datetime, project_name: str) -> None:
         ],
     }
 
-    while True:
-        now = datetime.now()
-        elapsed = now - start_dt
-        hhmmss = now.strftime("%H:%M:%S")
-        # Build 5 rows
-        rows = [""] * 5
-        for ch in hhmmss:
-            glyph = DIGITS.get(ch, DIGITS['0'])
-            for i in range(5):
-                rows[i] += glyph[i] + "  "
+    # Enter alternate screen buffer and hide cursor to avoid scrollback spam
+    print("\x1b[?1049h\x1b[?25l", end="")
+    try:
+        while True:
+            now = datetime.now()
+            elapsed = now - start_dt
+            hhmmss = now.strftime("%H:%M:%S")
+            # Build 5 rows
+            rows = [""] * 5
+            for ch in hhmmss:
+                glyph = DIGITS.get(ch, DIGITS['0'])
+                for i in range(5):
+                    rows[i] += glyph[i] + "  "
 
-        # Clear screen and move cursor to top-left
-        print("\x1b[2J\x1b[H", end="")
-        for r in rows:
-            print(r)
+            # Clear screen and move cursor to top-left
+            print("\x1b[2J\x1b[H", end="")
+            for r in rows:
+                print(r)
 
-        total = int(elapsed.total_seconds())
-        h, rem = divmod(total, 3600)
-        m, s = divmod(rem, 60)
-        print("")
-        # lowercase status lines
-        print(f"currently working on: {str(project_name).lower()}")
-        print(now.strftime("time: %Y-%m-%d %H:%M:%S").lower())
-        print(f"elapsed: {h}h{m:02d}m{s:02d}s")
-        _time.sleep(1)
+            total = int(elapsed.total_seconds())
+            h, rem = divmod(total, 3600)
+            m, s = divmod(rem, 60)
+            print("")
+            # lowercase status lines
+            print(f"currently working on: {str(project_name).lower()}")
+            print(now.strftime("time: %Y-%m-%d %H:%M:%S").lower())
+            print(f"elapsed: {h}h{m:02d}m{s:02d}s")
+            _time.sleep(1)
+    finally:
+        # Restore cursor and leave alternate screen buffer
+        print("\x1b[?25h\x1b[?1049l", end="", flush=True)
 
 
 def cmd_start(args: argparse.Namespace) -> None:
@@ -251,6 +274,11 @@ def cmd_start(args: argparse.Namespace) -> None:
                     sig_name = {getattr(signal, n): n for n in dir(signal) if n.startswith("SIG")}.get(signum, str(signum))
                     print(f"\nStopped (via {sig_name}):", data_sig[-1]["project"]) 
             finally:
+                # Ensure terminal is restored (show cursor, leave alt screen)
+                try:
+                    print("\x1b[?25h\x1b[?1049l", end="", flush=True)
+                except Exception:
+                    pass
                 os._exit(0)
 
         try:
@@ -296,6 +324,60 @@ def cmd_stop(_: argparse.Namespace) -> None:
         pass
     save_data(data)
     print(f"Stopped: {data[-1]['project']}")
+
+
+def cmd_add(args: argparse.Namespace) -> None:
+    # Parse duration from first argument and project from remaining arguments
+    # Example: tt time add 1hr30min coding site
+    # args.duration_and_project = ['1hr30min', 'coding', 'site']
+    if not args.duration_and_project:
+        print("Usage: tt time add <duration> <project name>")
+        print("Example: tt time add 1hr30min coding site")
+        return
+    
+    duration_str = args.duration_and_project[0]
+    project_parts = args.duration_and_project[1:]
+    
+    if not project_parts:
+        print("Error: Project name is required")
+        print("Example: tt time add 1hr30min coding site")
+        return
+    
+    project_name = " ".join(project_parts)
+    
+    # Parse duration using existing parse_duration function
+    try:
+        dur = parse_duration(duration_str)
+    except ValueError as e:
+        print(f"Invalid duration '{duration_str}': {e}")
+        print("Examples: 1hr30min, 2h, 45min, 90min")
+        return
+    
+    # Create entry ending now, starting duration ago
+    end_time = datetime.now()
+    start_time = end_time - dur
+    data = load_data()
+    secs = int(dur.total_seconds())
+    
+    data.append({
+        "project": project_name,
+        "start": start_time.isoformat(),
+        "end": end_time.isoformat(),
+        "duration_seconds": secs,
+        "duration": _secs_to_hms(secs),
+        "manual": True,
+    })
+    save_data(data)
+    
+    # Format output
+    hours = secs // 3600
+    mins = (secs % 3600) // 60
+    if hours > 0:
+        duration_display = f"{hours}h{mins:02d}m"
+    else:
+        duration_display = f"{mins}m"
+    
+    print(f"Added {duration_display} to: {project_name}")
 
 
 def cmd_log(args: argparse.Namespace) -> None:
@@ -393,152 +475,183 @@ def cmd_report(args: argparse.Namespace) -> None:
         return
 
     now = datetime.now()
-    today = now.date()
-    month_start = start_of_month(today)
-    month_end = end_of_month(today)  # exclusive upper bound
-
-    # Aggregations
-    # per_day_totals[YYYY-MM-DD][project] = timedelta
-    per_day_totals: Dict[str, Dict[str, timedelta]] = {}
-    monthly_project_totals: Dict[str, timedelta] = {}
-
+    
+    # First pass: collect all months that have data
+    months_with_data = set()
     for e in data:
-        proj = e.get("project", "(unknown)")
         start_s = e.get("start")
         end_s = e.get("end")
         if not start_s:
             continue
         start = datetime.fromisoformat(start_s)
         end = datetime.fromisoformat(end_s) if end_s else now
+        
+        # Add months for both start and end dates
+        months_with_data.add((start.year, start.month))
+        months_with_data.add((end.year, end.month))
+    
+    # Sort months chronologically
+    sorted_months = sorted(months_with_data)
+    
+    print(f"Generating reports for {len(sorted_months)} months with data...")
+    print()
+    
+    # Process each month separately
+    for year, month in sorted_months:
+        month_start = datetime(year, month, 1)
+        month_end = end_of_month(datetime(year, month, 1).date())  # exclusive upper bound
+        
+        # Aggregations for this specific month
+        # per_day_totals[YYYY-MM-DD][project] = timedelta
+        per_day_totals: Dict[str, Dict[str, timedelta]] = {}
+        monthly_project_totals: Dict[str, timedelta] = {}
 
-        # Consider only overlap with this month window [month_start, month_end)
-        interval = clamp_interval(start, end, month_start, month_end)
-        if not interval:
-            continue
-        cur_start, cur_end = interval
-
-        # Split across days
-        while cur_start < cur_end:
-            next_midnight = day_span(cur_start)
-            seg_end = min(cur_end, next_midnight)
-            dur = seg_end - cur_start
-            day_key = cur_start.date().isoformat()
-            per_day_totals.setdefault(day_key, {})
-            per_day_totals[day_key][proj] = per_day_totals[day_key].get(proj, timedelta()) + dur
-            monthly_project_totals[proj] = monthly_project_totals.get(proj, timedelta()) + dur
-            cur_start = seg_end
-
-    # Prepare weekly grouping within the month
-    # Build ordered list of days in the month
-    days: List[date] = []
-    dcur = month_start.date()
-    while datetime.combine(dcur, datetime.min.time()) < month_end:
-        days.append(dcur)
-        dcur = dcur + timedelta(days=1)
-
-    # Group by ISO week
-    from collections import OrderedDict
-
-    weeks: "OrderedDict[tuple, List[date]]" = OrderedDict()
-    for dday in days:
-        iso = dday.isocalendar()  # (year, week, weekday)
-        key = (iso[0], iso[1])
-        if key not in weeks:
-            weeks[key] = []
-        weeks[key].append(dday)
-
-    # Printing
-    month_label = month_start.strftime("%B %Y")
-    print(f"Report for {month_label} (from {month_start.strftime('%Y-%m-%d')} to {(month_end - timedelta(days=1)).strftime('%Y-%m-%d')})")
-    print("")
-
-    # For each week, show days that have any time (or all days? keep concise: only days with data)
-    for (wyear, wnum), wdays in weeks.items():
-        # Determine range within month for label
-        label_start = wdays[0]
-        label_end = wdays[-1]
-        print(f"Week {wyear}-W{wnum:02d} ({label_start.strftime('%b %d')} - {label_end.strftime('%b %d')})")
-        week_had_output = False
-        for dday in wdays:
-            day_key = dday.isoformat()
-            if day_key not in per_day_totals:
+        for e in data:
+            proj = e.get("project", "(unknown)")
+            start_s = e.get("start")
+            end_s = e.get("end")
+            if not start_s:
                 continue
-            week_had_output = True
-            projects = per_day_totals[day_key]
-            day_total = sum((td for td in projects.values()), timedelta())
-            print(f"  {dday.strftime('%Y-%m-%d (%a)')}: {human_td(day_total)}")
-            for proj, dur in sorted(projects.items(), key=lambda x: x[0].lower()):
-                print(f"    - {proj}: {human_td(dur)}")
-        if not week_had_output:
-            print("  (no time)")
+            start = datetime.fromisoformat(start_s)
+            end = datetime.fromisoformat(end_s) if end_s else now
+
+            # Consider only overlap with this month window [month_start, month_end)
+            interval = clamp_interval(start, end, month_start, month_end)
+            if not interval:
+                continue
+            cur_start, cur_end = interval
+
+            # Split across days
+            while cur_start < cur_end:
+                next_midnight = day_span(cur_start)
+                seg_end = min(cur_end, next_midnight)
+                dur = seg_end - cur_start
+                day_key = cur_start.date().isoformat()
+                per_day_totals.setdefault(day_key, {})
+                per_day_totals[day_key][proj] = per_day_totals[day_key].get(proj, timedelta()) + dur
+                monthly_project_totals[proj] = monthly_project_totals.get(proj, timedelta()) + dur
+                cur_start = seg_end
+
+        # Skip months with no actual time logged
+        if not monthly_project_totals:
+            continue
+
+        # Prepare weekly grouping within the month
+        # Build ordered list of days in the month
+        days: List[date] = []
+        dcur = month_start.date()
+        while datetime.combine(dcur, datetime.min.time()) < month_end:
+            days.append(dcur)
+            dcur = dcur + timedelta(days=1)
+
+        # Group by ISO week
+        from collections import OrderedDict
+
+        weeks: "OrderedDict[tuple, List[date]]" = OrderedDict()
+        for dday in days:
+            iso = dday.isocalendar()  # (year, week, weekday)
+            key = (iso[0], iso[1])
+            if key not in weeks:
+                weeks[key] = []
+            weeks[key].append(dday)
+
+        # Printing
+        month_label = month_start.strftime("%B %Y")
+        print(f"Report for {month_label} (from {month_start.strftime('%Y-%m-%d')} to {(month_end - timedelta(days=1)).strftime('%Y-%m-%d')})")
         print("")
 
-    # Monthly totals
-    print("Monthly totals:")
-    if monthly_project_totals:
-        for proj, dur in sorted(monthly_project_totals.items(), key=lambda x: x[0].lower()):
-            print(f"- {proj}: {human_td(dur)}")
-        overall = sum((td for td in monthly_project_totals.values()), timedelta())
-        print(f"- Overall: {human_td(overall)}")
-    else:
-        print("(no time this month)")
-
-    # Export CSV to ~/Documents/Time Sheet Reports/<Month-YYYY>/<Time Sheet - <Month YYYY>>.csv
-    # Build folder and filename
-    docs = os.path.expanduser("~/Documents")
-    month_folder = month_start.strftime("%B-%Y")  # e.g., August-2025
-    export_dir = os.path.join(docs, "Time Sheet Reports", month_folder)
-    os.makedirs(export_dir, exist_ok=True)
-    export_name = f"Time Sheet - {month_label}.csv"  # e.g., Time Sheet - August 2025.csv
-    export_path = os.path.join(export_dir, export_name)
-
-    # Write CSV: Date, Weekday, Project, Duration (HH:MM)
-    def td_to_hm(td: timedelta) -> str:
-        total = int(td.total_seconds())
-        h, rem = divmod(total, 3600)
-        m, _ = divmod(rem, 60)
-        return f"{h:02d}:{m:02d}"
-
-    with open(export_path, "w", newline="") as csvfile:
-        writer = csv.writer(csvfile)
-        writer.writerow([f"Report for {month_label}"])
-        writer.writerow([f"From {month_start.strftime('%Y-%m-%d')} to {(month_end - timedelta(days=1)).strftime('%Y-%m-%d')}"])
-        writer.writerow([])
-        writer.writerow(["Date", "Weekday", "Project", "Duration (HH:MM)"])
-
-        # Iterate days in order, writing only days with data
-        for dday in days:
-            day_key = dday.isoformat()
-            if day_key not in per_day_totals:
-                continue
-            projects = per_day_totals[day_key]
-            for proj, dur in sorted(projects.items(), key=lambda x: x[0].lower()):
-                writer.writerow([
-                    dday.strftime('%Y-%m-%d'),
-                    dday.strftime('%a'),
-                    proj,
-                    td_to_hm(dur),
-                ])
+        # For each week, show days that have any time (or all days? keep concise: only days with data)
+        for (wyear, wnum), wdays in weeks.items():
+            # Determine range within month for label
+            label_start = wdays[0]
+            label_end = wdays[-1]
+            print(f"Week {wyear}-W{wnum:02d} ({label_start.strftime('%b %d')} - {label_end.strftime('%b %d')})")
+            week_had_output = False
+            for dday in wdays:
+                day_key = dday.isoformat()
+                if day_key not in per_day_totals:
+                    continue
+                week_had_output = True
+                projects = per_day_totals[day_key]
+                day_total = sum((td for td in projects.values()), timedelta())
+                print(f"  {dday.strftime('%Y-%m-%d (%a)')}: {human_td(day_total)}")
+                for proj, dur in sorted(projects.items(), key=lambda x: x[0].lower()):
+                    print(f"    - {proj}: {human_td(dur)}")
+            if not week_had_output:
+                print("  (no time)")
+            print("")
 
         # Monthly totals
-        writer.writerow([])
-        writer.writerow(["Monthly totals"])
+        print("Monthly totals:")
         if monthly_project_totals:
             for proj, dur in sorted(monthly_project_totals.items(), key=lambda x: x[0].lower()):
-                writer.writerow([proj, td_to_hm(dur)])
+                print(f"- {proj}: {human_td(dur)}")
             overall = sum((td for td in monthly_project_totals.values()), timedelta())
-            writer.writerow(["Overall", td_to_hm(overall)])
+            print(f"- Overall: {human_td(overall)}")
         else:
-            writer.writerow(["(no time this month)"])
+            print("(no time this month)")
 
-    print("")
-    try:
-        url = Path(export_path).as_uri()
-        clickable = _osc8_link(export_path, url)
-        print(f"Exported report to: {clickable}")
-    except Exception:
-        # Fallback: plain path
-        print(f"Exported report to: {export_path}")
+        # Export CSV to ~/Documents/Time Sheet Reports/<Month-YYYY>/<Time Sheet - <Month YYYY>>.csv
+        # Build folder and filename
+        docs = os.path.expanduser("~/Documents")
+        month_folder = month_start.strftime("%B-%Y")  # e.g., August-2025
+        export_dir = os.path.join(docs, "Time Sheet Reports", month_folder)
+        os.makedirs(export_dir, exist_ok=True)
+        export_name = f"Time Sheet - {month_label}.csv"  # e.g., Time Sheet - August 2025.csv
+        export_path = os.path.join(export_dir, export_name)
+
+        # Write CSV: Date, Weekday, Project, Duration (HH:MM)
+        def td_to_hm(td: timedelta) -> str:
+            total = int(td.total_seconds())
+            h, rem = divmod(total, 3600)
+            m, _ = divmod(rem, 60)
+            return f"{h:02d}:{m:02d}"
+
+        with open(export_path, "w", newline="") as csvfile:
+            writer = csv.writer(csvfile)
+            writer.writerow([f"Report for {month_label}"])
+            writer.writerow([f"From {month_start.strftime('%Y-%m-%d')} to {(month_end - timedelta(days=1)).strftime('%Y-%m-%d')}"])
+            writer.writerow([])
+            writer.writerow(["Date", "Weekday", "Project", "Duration (HH:MM)"])
+
+            # Iterate days in order, writing only days with data
+            for dday in days:
+                day_key = dday.isoformat()
+                if day_key not in per_day_totals:
+                    continue
+                projects = per_day_totals[day_key]
+                for proj, dur in sorted(projects.items(), key=lambda x: x[0].lower()):
+                    writer.writerow([
+                        dday.strftime('%Y-%m-%d'),
+                        dday.strftime('%a'),
+                        proj,
+                        td_to_hm(dur),
+                    ])
+
+            # Monthly totals
+            writer.writerow([])
+            writer.writerow(["Monthly totals"])
+            if monthly_project_totals:
+                for proj, dur in sorted(monthly_project_totals.items(), key=lambda x: x[0].lower()):
+                    writer.writerow([proj, td_to_hm(dur)])
+                overall = sum((td for td in monthly_project_totals.values()), timedelta())
+                writer.writerow(["Overall", td_to_hm(overall)])
+            else:
+                writer.writerow(["(no time this month)"])
+
+        print("")
+        try:
+            url = Path(export_path).as_uri()
+            clickable = _osc8_link(export_path, url)
+            print(f"Exported report to: {clickable}")
+        except Exception:
+            # Fallback: plain path
+            print(f"Exported report to: {export_path}")
+        
+        print("=" * 60)
+        print()
+    
+    print(f"Generated reports for {len([m for m in sorted_months if any(e.get('start') and datetime.fromisoformat(e['start']).year == m[0] and datetime.fromisoformat(e['start']).month == m[1] for e in data)])} months with time entries.")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -556,6 +669,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_stop = sp.add_parser("stop", help="Stop active timer")
     p_stop.set_defaults(func=cmd_stop)
+
+    p_add = sp.add_parser("add", help="Add time entry: duration followed by project name")
+    p_add.add_argument("duration_and_project", nargs="+", help="Duration and project (e.g., 1hr30min coding site)")
+    p_add.set_defaults(func=cmd_add)
 
     p_log = sp.add_parser("log", help="Log time: plain hours or duration (e.g., 3, 3.5, 1h30m, 45m)")
     p_log.add_argument("project", help="Project name")
